@@ -300,9 +300,10 @@ def test_rule_ml_disagreement():
     print(f"  Final prediction: {detection.final_prediction}")
     print(f"  Combined conf:    {detection.combined_confidence}")
 
-    # ML-only: DOS detected by ML, BENIGN by rules
-    # This is Case C: ml-only, confidence penalized
-    ok = detection.final_prediction == DOS  # ML's prediction wins
+    # Case C (ML advisory): ML predicts DOS but the rule engine is BENIGN, so
+    # ML alone must not raise an alert — the final verdict stays BENIGN while
+    # the ML opinion is retained for context.
+    ok = detection.final_prediction == BENIGN and detection.ml_prediction == DOS
     return ok
 
 

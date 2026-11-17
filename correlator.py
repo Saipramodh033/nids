@@ -225,12 +225,20 @@ class CorrelationEngine:
                 ),
             )
 
-        # ---- Case C: Rule says BENIGN, ML detects attack ----
+        # ---- Case C: Rule says BENIGN, ML flags an attack (ML is ADVISORY) ----
+        # The rule engine is authoritative for whether an alert is raised. On
+        # live traffic the ML model exhibits documented domain shift (it was
+        # trained on CICIDS2017 CSV flow statistics, not the features computed
+        # here), so on its own it produces false positives on benign traffic
+        # (e.g. the dashboard's own polling and the sensor's return packets).
+        # It therefore may NOT raise an alert by itself: when the rule engine
+        # found no triggers, the final verdict stays BENIGN. The ML opinion is
+        # still recorded (ml_prediction / ml_confidence / ml_top3) so analysts
+        # can see it as advisory context in the alert detail view.
         if rule_pred == BENIGN and ml_label != BENIGN:
-            combined = ml_conf * SOURCE_DISAGREEMENT_PENALTY
             return DetectionResult(
-                final_prediction=ml_label,
-                combined_confidence=round(combined, 4),
+                final_prediction=BENIGN,
+                combined_confidence=0.0,
                 rule_prediction=rule_pred,
                 rule_confidence=round(rule_conf, 4),
                 ml_prediction=ml_label,
@@ -238,10 +246,10 @@ class CorrelationEngine:
                 triggered_rules=list(rule_result.triggered_rules),
                 ml_top3=ml_top3,
                 explanation=(
-                    f"ML-ONLY DETECTION: Rule Engine said BENIGN, ML predicted {ml_label}@{ml_conf:.3f}. "
-                    f"Trusting ML (anomaly detector) with penalty {SOURCE_DISAGREEMENT_PENALTY}: "
-                    f"{ml_conf:.3f} × {SOURCE_DISAGREEMENT_PENALTY} = {combined:.4f}. "
-                    f"Rule engine found no triggers."
+                    f"ADVISORY (ML-only, not alerted): Rule Engine found no triggers (BENIGN); "
+                    f"ML hinted {ml_label}@{ml_conf:.3f}. ML is advisory on live traffic and cannot "
+                    f"raise an alert on its own, so the final verdict is BENIGN. "
+                    f"ML opinion retained for context."
                 ),
             )
 

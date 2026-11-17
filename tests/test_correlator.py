@@ -262,11 +262,18 @@ def test_rule_benign_ml_attack():
     print(f"  Explanation: {result.explanation[:100]}...")
     print()
 
-    # Rule benign + ML attack: 0.75 * 0.80 = 0.60
-    expected = 0.75 * 0.80
-    ok = result.final_prediction == DOS and abs(result.combined_confidence - expected) < 0.01
+    # ML is advisory: with the rule engine BENIGN, ML alone must NOT raise an
+    # alert, so the final verdict stays BENIGN (combined confidence 0.0). The
+    # ML opinion is still recorded for analyst context.
+    expected = 0.0
+    ok = (
+        result.final_prediction == BENIGN
+        and abs(result.combined_confidence - expected) < 0.01
+        and result.ml_prediction == DOS
+    )
     print(f"  Expected combined ~{expected:.4f}, got {result.combined_confidence:.4f}")
-    print(f"  Final prediction follows ML (DOS): {result.final_prediction == DOS}")
+    print(f"  Final verdict BENIGN (ML advisory only): {result.final_prediction == BENIGN}")
+    print(f"  ML opinion retained (DOS): {result.ml_prediction == DOS}")
     print(f"  Result: {'PASS' if ok else 'FAIL'}")
     print()
     return ok

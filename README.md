@@ -1,212 +1,89 @@
-# NIDS (Network Intrusion Detection System)
+# Sentinel — Network Intrusion Detection System (NIDS)
 
-A Python-based, flow-oriented Network Intrusion Detection System ("NIDS Sentinel") that captures or replays network traffic, aggregates packets into bidirectional flows, detects suspicious behavior using a hybrid rule engine + machine learning model, and presents alerts/risk scores in a Streamlit dashboard.
+A Python, **flow-based hybrid NIDS**. It captures live network traffic (or replays a
+PCAP), aggregates packets into bidirectional **flows**, extracts 18 statistical features
+per flow, and detects attacks using a **rule engine + machine-learning model** fused by a
+correlator. Alerts and risk scores are shown on a live **Streamlit dashboard**.
 
-> **Status note:** This repository contains the core implementation, tests, and extensive evaluation artifacts/reports. Live packet capture and isolated non-loopback lab validation are environment-dependent and are documented as partially unverified/blocked in project reports (see `evaluation/TEST_STATUS.md` and `docs/NIDS_AUDIT_REPORT.md`).
+Detects **reconnaissance, port scanning, brute force, and DoS** from network behaviour
+(no payload inspection).
 
-## How the project works
+---
 
-### End-to-end flow
+## 📖 Full documentation — start here
 
-```text
-Network traffic (live capture or PCAP replay)
-        │
-        ▼
-packet_capture.py / dashboard.py
-  - sniff packets (Scapy) or read PCAP
-  - parse 5-tuple, protocol, flags, size, timestamp
-        │
-        ▼
-flow_manager.py + flow.py
-  - group packets into bidirectional flows (5-tuple)
-  - track per-flow stats (duration, pkt/byte counts, TCP flags, size/rate stats)
-  - emit completed/expired flows
-        │
-        ▼
-flow.get_features()  (18-feature vector, schema in features.py)
-        │
-        ├───────────────────────────────┐
-        ▼                               ▼
-rule_engine.py                    model.py
-(threshold/stateful rules,        (StandardScaler + RandomForest
- config.py)                        on 18 features)
-  - rule prediction/confidence      - ML prediction/confidence/probabilities
-  - triggered rules
-        └───────────────┬───────────────┘
-                        ▼
-                correlator.py
-          fuse rule + ML into final detection
-                        │
-                        ▼
-                risk_scorer.py
-            prediction/confidence → risk score + severity
-                        │
-                        ▼
-                  alerts.py
-        create/store alert (dedup/rate-limit, explanation, metadata)
-                        │
-                        ▼
-        dashboard.py + dashboard_data.py (Streamlit "Sentinel")
-          KPIs, charts, recent alerts, alert details
+**→ [`PROJECT_GUIDE/00_START_HERE.md`](PROJECT_GUIDE/00_START_HERE.md)**
+
+The `PROJECT_GUIDE/` folder is the complete, self-contained explanation of this project
+(written so a new reader — human or AI — can get the full picture):
+
+| File | What it covers |
+|------|----------------|
+| [`00_START_HERE.md`](PROJECT_GUIDE/00_START_HERE.md) | Entry point, index, 30-second picture, codebase map |
+| [`01_WHAT_IT_DOES.md`](PROJECT_GUIDE/01_WHAT_IT_DOES.md) | Full plain-English picture: the problem, the end-to-end story, attack classes, the two detectors |
+| [`02_ARCHITECTURE.md`](PROJECT_GUIDE/02_ARCHITECTURE.md) | Diagrams, file-by-file map, every rule + threshold, correlator logic, ML model, deployment topology |
+| [`03_DEMO_GUIDE.md`](PROJECT_GUIDE/03_DEMO_GUIDE.md) | Step-by-step live demo script (commands, what to click, what to say, Q&A) |
+| [`04_STATUS_AND_LIMITATIONS.md`](PROJECT_GUIDE/04_STATUS_AND_LIMITATIONS.md) | Honest state: what works (measured live), what doesn't, known issues, design decisions |
+
+---
+
+## Quick start
+
+```bash
+pip install -r requirements.txt       # pandas, scapy, scikit-learn, joblib, streamlit
+streamlit run dashboard.py            # open the dashboard, then Start capture or replay a PCAP
 ```
 
-**Pipeline orchestration:** `pipeline.py` (`NIDSPipeline`) runs this chain per completed flow with per-stage error handling. `ProcessingWorker` can process packets from a queue in a background thread (used by the dashboard).
+A trained model (`models/nids_model.joblib`) and a sample dataset
+(`evaluation/datasets/CICIDS2017_sample.csv`) are included, so the dashboard runs without
+training first.
 
-### 1. Packet ingestion
-- **Live capture:** `packet_capture.py` uses Scapy to sniff packets from a network interface.
-- **PCAP replay:** `dashboard.py` can replay uploaded `.pcap/.pcapng` files through the same pipeline.
-- Parsed packet information (5-tuple, protocol, flags, sizes, timestamps) is fed into the flow tracker.
+### Run the live lab demo (Kali → Ubuntu)
 
-### 2. Flow tracking and feature extraction
-- `flow_manager.py` groups packets into bidirectional flows keyed by the canonical 5-tuple (source/destination IP, source/destination port, protocol).
-- `flow.py` maintains per-flow state (packet/byte counts per direction, TCP flag counts, timing, packet size stats, etc.).
-- When a flow is completed/expired, `flow.get_features()` produces the feature vector used for detection.
-- `features.py` defines the canonical **18-feature** schema shared by extraction, training, and inference.
+See [`PROJECT_GUIDE/03_DEMO_GUIDE.md`](PROJECT_GUIDE/03_DEMO_GUIDE.md). In short:
 
-### 3. Detection engines
-Each completed flow is analyzed by two complementary detection paths:
+```bash
+# Ubuntu sensor:
+sudo bash -c '.venv/bin/streamlit run dashboard.py --server.address 0.0.0.0 --server.port 8501 --server.headless true &'
+# Browser → http://192.168.56.107:8501 → interface `enp0s8` → Start capture
 
-- **Rule engine (`rule_engine.py`, configured in `config.py`)**
-  - Applies threshold/stateful heuristics for attack patterns such as DoS/flooding indicators, port scanning, brute-force behavior, and reconnaissance.
-  - Uses per-flow and cross-flow/time-window logic (where applicable) and returns a rule prediction, confidence, and triggered rule reasons.
-
-- **Machine learning model (`model.py`)**
-  - Uses a trained `StandardScaler` + `RandomForestClassifier` bundle (saved/loaded via joblib, default `models/nids_model.joblib`).
-  - Predicts a traffic class and confidence/probabilities from the same 18 flow features.
-  - Training utilities: `train_model.py`, `retrain_model.py`, `data_extractor.py` (CICIDS2017-based feature extraction/label mapping workflow in this project).
-
-### 4. Correlation, risk scoring, and alerting
-- **Correlation (`correlator.py`)** fuses rule-engine and ML outputs into a single detection result (handles agreement/disagreement/one-sided cases and produces combined confidence/context).
-- **Risk scoring (`risk_scorer.py`)** maps the final prediction/confidence to a risk score and severity.
-- **Alert management (`alerts.py`)** creates alert records with detection/risk metadata, explanation/context, deduplication/rate-limiting behavior, and in-memory alert storage/statistics.
-
-### 5. Pipeline orchestration
-- `pipeline.py` (`NIDSPipeline`) wires the full chain:
-  1. `FlowManager` processes packets and emits completed flows
-  2. Feature extraction (`flow.get_features()`)
-  3. `RuleEngine.process_flow(flow)`
-  4. `CorrelationEngine.correlate(...)`
-  5. `RiskScorer.score(...)`
-  6. `AlertManager.create_alert(...)`
-- The pipeline is designed with per-stage error handling so one bad flow/stage failure does not crash the whole run.
-- `ProcessingWorker` (in `pipeline.py`) supports queue-based/background packet processing so capture/producer and processing can be decoupled (used by the dashboard/UI flow).
-
-### 6. Dashboard (UI)
-- `dashboard.py` is a Streamlit app ("Sentinel") that:
-  - initializes a `NIDSPipeline`
-  - starts/stops live capture in a background worker thread, or replays a PCAP
-  - periodically refreshes KPIs, charts, and recent alerts
-  - shows alert details (severity, attack type, rule/ML outputs, risk, explanation, etc.)
-- `dashboard_data.py` (and related dashboard modules, if present) provide aggregation/helpers for UI metrics.
-
-## Project structure
-
-```text
-NIDS/
-├── alerts.py                # Alert creation, dedup/rate-limit, alert storage
-├── config.py                # Flow/rule thresholds and severity mapping
-├── correlator.py            # Rule + ML fusion logic
-├── dashboard.py             # Streamlit dashboard UI
-├── dashboard_data.py        # Dashboard KPI/aggregation helpers
-├── data_extractor.py        # Dataset feature extraction / label mapping helpers
-├── features.py              # Canonical 18-feature schema
-├── flow.py                  # Flow model and feature computation
-├── flow_manager.py          # Packet-to-flow tracking and expiration
-├── model.py                 # ML model wrapper (load/predict/train utilities)
-├── packet_capture.py        # Scapy capture/parsing utilities
-├── pipeline.py              # End-to-end pipeline orchestration
-├── retrain_model.py         # Retraining workflow/script
-├── risk_scorer.py           # Risk/severity scoring
-├── rule_engine.py           # Stateful/threshold-based detection rules
-├── train_model.py           # Model training script
-├── requirements.txt         # Python dependencies
-├── docs/                    # Notes, audit, requirements docs, papers
-├── evaluation/              # Evaluation harness, datasets metadata, reports, results
-└── tests/                   # Unit/integration/regression/live-oriented tests
+# Kali attacker:
+sudo nmap -sS -T4 192.168.56.107                                 # port scan / recon
+sudo hping3 -S -p 80 -s 5000 -k -i u2000 -c 1000 192.168.56.107  # DoS burst
 ```
+
+---
+
+## Architecture at a glance
+
+```
+packets ─► FlowManager ─► Flow (18 features) ─┬─► RuleEngine ─┐
+                                              └─► ML model ────┴─► Correlator ─► Risk ─► Alert ─► Dashboard
+```
+
+The rule engine is **authoritative**; the ML model is **advisory** (runs and is displayed,
+but does not raise alerts on its own — see `04_STATUS_AND_LIMITATIONS.md` for why).
+
+## Status
+
+- ✅ Port scan, reconnaissance, DoS — detected and verified live.
+- ⚠️ ML model — advisory only (domain shift vs CICIDS2017 training data).
+- ❌ Brute force — does not fire in practice (documented future work).
 
 ## Requirements
 
-- Python 3.12+ recommended (project has been developed/tested in that environment)
-- Dependencies listed in `requirements.txt`:
-  - `pandas`
-  - `scapy`
-  - `scikit-learn`
-  - `joblib`
-  - `streamlit`
-- **Live capture requirements (platform-dependent):**
-  - Appropriate packet-capture permissions
-  - On Windows: Npcap and often Administrator privileges for live sniffing
+- Python 3.12+ (deployment tested on 3.14)
+- `pandas`, `scapy`, `scikit-learn`, `joblib`, `streamlit` (see `requirements.txt`)
+- Live capture needs packet-capture permissions (root on Linux; Npcap + Admin on Windows)
 
-Install dependencies:
+## Repository layout
 
-```bash
-pip install -r requirements.txt
 ```
-
-## Quick start (clone & run)
-
-This repo includes a default trained model (`models/nids_model.joblib`) so the dashboard can run without training first.
-
-```bash
-git clone https://github.com/lohith1947/nids.git
-cd nids
-pip install -r requirements.txt
-streamlit run dashboard.py
+NIDS/
+├── PROJECT_GUIDE/   ← complete documentation (read 00_START_HERE.md first)
+├── *.py             ← core modules (see 02_ARCHITECTURE.md for the file-by-file map)
+├── models/          ← trained model (nids_model.joblib)
+├── tests/           ← unit / integration / regression tests
+├── evaluation/      ← evaluation harness, stage reports, captured evidence
+└── docs/            ← code audit, notes, dashboard requirements, reference papers
 ```
-
-Then either replay a `.pcap/.pcapng` file or start live capture (if your system/interface permissions allow).
-
-## Usage
-
-### Run the dashboard (Streamlit)
-From the `NIDS` project directory:
-
-```bash
-streamlit run dashboard.py
-```
-
-Notes:
-- The dashboard loads the trained model from `models/nids_model.joblib` by default (included in this repo for easy setup).
-- You can start live capture from the UI (interface selection supported) or replay a `.pcap/.pcapng` file.
-- Live capture behavior depends on OS/interface permissions and Scapy/Npcap availability.
-
-### Train or retrain a model
-The training script downloads/loads a CICIDS2017 sample dataset, extracts features, trains a Random Forest model, evaluates it, and saves it to `models/nids_model.joblib`:
-
-```bash
-python -m NIDS.train_model
-```
-
-(Adjust the command/module invocation to your working directory/package layout as needed. A small sample CSV is also included at `evaluation/datasets/CICIDS2017_sample.csv` for reference; large external datasets such as CSE-CIC-IDS2018 are not bundled.)
-
-### Programmatic/pipeline usage
-The core orchestration lives in `pipeline.py` (`NIDSPipeline`, `ProcessingWorker`). It can be used to process packets/flows through the full detection chain and access generated alerts/statistics.
-
-## Evaluation and testing
-
-- `tests/` contains unit, integration, regression, and live-capture-related tests.
-- `evaluation/` contains data collection/analysis scripts, stage reports, metrics, and benchmark artifacts.
-- `evaluation/TEST_STATUS.md` and `docs/NIDS_AUDIT_REPORT.md` document recent offline test results, known limitations, and audit findings (including live-capture constraints and identified correctness issues to address).
-
-Example offline test command (as documented in project status):
-
-```bash
-python -m pytest tests -q --tb=short --disable-warnings --ignore=tests/test_live_e2e.py --ignore=tests/test_live_e2e_corrected.py --ignore=tests/test_phase1_smoke.py --ignore=tests/test_stage9_live.py
-```
-
-## Known limitations / notes
-
-- Some detection thresholds are initial and may require calibration for your environment.
-- Live capture and end-to-end VM/lab validation depend on network/interface/permission setup.
-- Audit reports in `docs/` describe known issues and improvement areas (e.g. flow timeout behavior, label-mapping robustness, alert dedup confidence semantics).
-- To keep the repo manageable, large external datasets (e.g. CSE-CIC-IDS2018) and many generated evaluation artifacts/results are excluded by `.gitignore`. A default trained model (`models/nids_model.joblib`) and a small sample dataset (`evaluation/datasets/CICIDS2017_sample.csv`) are included for quick setup.
-
-## Additional documentation
-
-- `docs/NIDS_AUDIT_REPORT.md` — architecture/code audit and findings
-- `docs/NIDS_NOTES.md` — project notes
-- `docs/DASHBOARD_REQUIREMENTS.md` — dashboard requirements/design notes
-- `evaluation/TEST_STATUS.md` — latest recorded offline test/evaluation status
-- `evaluation/datasets/README.md` — evaluation dataset provenance/notes
-- `evaluation/datasets/STAGE11_*` — stage reports and validation analyses
